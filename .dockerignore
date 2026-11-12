@@ -2,3 +2,5 @@
 !requirements.txt
 !app/
 !app/*.py
+!docker/
+!docker/firewall-entrypoint.sh

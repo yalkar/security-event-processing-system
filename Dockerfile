@@ -7,6 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iptables util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 # Необязательный CA для сборки за HTTPS-прокси; при обычной сборке не нужен.
 RUN --mount=type=secret,id=proxy_ca \
@@ -15,7 +19,8 @@ RUN --mount=type=secret,id=proxy_ca \
 
 RUN useradd --create-home --uid 10001 appuser
 COPY --chmod=755 app/ ./app/
-USER appuser
+COPY --chmod=755 docker/firewall-entrypoint.sh /usr/local/bin/seps-entrypoint
 
 EXPOSE 8000
+ENTRYPOINT ["/usr/local/bin/seps-entrypoint"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
