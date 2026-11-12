@@ -90,6 +90,18 @@ def test_cache_miss_loads_database_and_fills_cache(api, event):
     state.cache.put.assert_called_once_with(event)
 
 
+def test_cache_bypass_reads_database_without_retrying_cache_write(api, event):
+    client, state = api
+    state.cache.get.return_value = (None, "BYPASS")
+    state.cache.put.side_effect = AssertionError("BYPASS must not retry Redis")
+    response = client.get(f"/events/{event.id}")
+    assert response.status_code == 200
+    assert response.headers["x-cache"] == "BYPASS"
+    assert response.json() == event.model_dump(mode="json")
+    state.store.get.assert_called_once_with(event.id)
+    state.cache.put.assert_not_called()
+
+
 def test_missing_event_and_invalid_id(api):
     client, state = api
     state.store.get.return_value = None
@@ -128,6 +140,8 @@ def test_redis_outage_falls_back_to_database(api, event):
     assert response.status_code == 200
     assert response.headers["x-cache"] == "BYPASS"
     assert response.json()["id"] == str(event.id)
+    cache.client.get.assert_called_once_with(f"event:{event.id}")
+    cache.client.set.assert_not_called()
     assert client.post("/events", json=PAYLOAD).status_code == 201
 
 

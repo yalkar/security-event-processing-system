@@ -71,7 +71,9 @@ def create_app() -> FastAPI:
             event = request.app.state.store.get(event_id)
             if event is None:
                 raise HTTPException(status_code=404, detail="Event not found")
-            request.app.state.cache.put(event)
+            # BYPASS уже установил недоступность Redis в этом запросе.
+            if cache_status == "MISS":
+                request.app.state.cache.put(event)
         logger.info("event_read event_id=%s cache=%s", event_id, cache_status)
         response.headers["X-Cache"] = cache_status
         return event
