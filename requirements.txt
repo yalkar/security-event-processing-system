@@ -1,2 +1,5 @@
 fastapi==0.162.4
 uvicorn==0.54.0
+psycopg[binary]==3.3.9
+redis==8.1.0
+pika==1.4.4
