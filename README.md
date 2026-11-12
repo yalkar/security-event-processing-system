@@ -43,31 +43,32 @@ flowchart LR
     Source["Генератор тестовых событий"] -->|"HTTP"| SEPS["SEPS — система обработки событий безопасности"]
 ```
 
-### C2 — контейнеры (ДЗ 3)
+### C2 — контейнеры и сети (ДЗ 4)
 
 ```mermaid
-flowchart TD
-    Source["Клиент / генератор событий"] -->|"HTTP POST / GET"| API["Event API"]
-    API -->|"Публикация события"| MQ[("RabbitMQ")]
-    MQ -->|"Получение сообщения"| Worker["Event Worker"]
-    API -->|"INSERT / SELECT"| DB[("PostgreSQL")]
-    API <-->|"GET / SET с TTL"| Cache[("Redis")]
-    Worker -->|"Логирование, затем ACK"| Logs["stdout / docker compose logs"]
+flowchart LR
+    Client["Хост: браузер / PowerShell"] -->|"localhost:8000"| API["Event API"]
+    Client -->|"localhost:15672"| MQ[("RabbitMQ")]
+    API -->|"api-db: TCP 5432"| DB[("PostgreSQL")]
+    API -->|"api-cache: TCP 6379"| Cache[("Redis")]
+    API -->|"api-mq: TCP 5672"| MQ
+    Worker["Event Worker"] -->|"worker-mq: TCP 5672"| MQ
+    Worker -->|"Логирование, затем ACK"| Logs["stdout"]
 ```
 
-Сетевую сегментацию, правила доступа, резервное копирование и механизмы восстановления добавим в следующих заданиях.
+Стрелки сетей обозначают, кто может **инициировать** соединение. Ответы по установленному соединению разрешены. Consumer сам подключается к брокеру, а сообщения получает внутри этого соединения. Общей сети всех сервисов нет. Резервное копирование и механизмы восстановления — ДЗ 5.
 
 ## Этапы работы
 
 - [x] **ДЗ 1 — Введение в архитектуру:** выбраны предметная область и индивидуальный формат; подготовлена начальная архитектура C1/C2.
 - [x] **ДЗ 2 — Монолиты и микросервисы:** минимальный сервис и Docker Compose с PostgreSQL, Redis и RabbitMQ.
 - [x] **ДЗ 3 — Переход от монолита к микросервису:** взаимодействие с БД, кэшем и брокером, публикация событий и consumer.
-- [ ] **ДЗ 4 — Безопасная архитектура:** сетевые зоны, правила межсервисных соединений, демонстрация разрешённых и запрещённых подключений.
+- [x] **ДЗ 4 — Безопасная архитектура:** сетевые зоны, правила межсервисных соединений, демонстрация разрешённых и запрещённых подключений.
 - [ ] **ДЗ 5 — Построение надёжных систем:** показатели надёжности, отказоустойчивость и резервное копирование.
 
 ## Статус
 
-**ДЗ 3 реализовано:** `POST /events`, `GET /events/{id}`, PostgreSQL, Redis cache-aside и RabbitMQ consumer. В отличие от первоначальной целевой схемы ДЗ 1, по требованиям ДЗ 3 именно API сохраняет событие и работает с кэшем; Worker только логирует сообщения. `/` и `/health` из ДЗ 2 сохранены.
+**ДЗ 4 реализовано:** четыре сети и локальный firewall с политикой DROP. Сохранены возможности ДЗ 3: `POST /events`, `GET /events/{id}`, PostgreSQL, Redis cache-aside и RabbitMQ consumer. В отличие от первоначальной целевой схемы ДЗ 1, по требованиям ДЗ 3 именно API сохраняет событие и работает с кэшем; Worker только логирует сообщения. `/` и `/health` из ДЗ 2 сохранены.
 
 ## Локальный запуск
 
@@ -81,7 +82,7 @@ cp .env.example .env
 
 В PowerShell: `Copy-Item .env.example .env`. Если проект уже скачан, обновите код; существующий `.env` не перезаписывайте. Новая настройка `CACHE_TTL_SECONDS` необязательна: по умолчанию 60 секунд. Учётные данные ДЗ 2 и существующие тома сохраняются.
 
-`.env.example` содержит только демонстрационные значения. Реальные пароли храните в `.env`, исключённом из Git и Docker build context. API получает доступ к БД и RabbitMQ, Worker — только к RabbitMQ. Redis пока без аутентификации и без опубликованного порта; разграничение доступа — ДЗ 4.
+`.env.example` содержит только демонстрационные значения. Реальные пароли храните в `.env`, исключённом из Git и Docker build context. API получает доступ к БД и RabbitMQ, Worker — только к RabbitMQ. Redis без аутентификации и без опубликованного порта; сетевые правила разрешают подключение к нему только API.
 
 ```sh
 docker compose config --quiet
@@ -91,6 +92,8 @@ docker compose logs --tail=30 event-worker
 ```
 
 Ожидаются четыре контейнера `healthy` и `event-worker` со статусом `Up`. У Worker нет HTTP-сервера и отдельного healthcheck: строка `worker_connected queue=security_events` подтверждает подключение consumer. Сам по себе `Up` подтверждает только работу процесса.
+
+При обновлении работающего стенда с ДЗ 3 сначала выполните `docker compose down`, затем команду `up` выше: так все контейнеры получат новую топологию. **Не добавляйте `--volumes`** — события и настройки брокера должны сохраниться. При сборке нужен доступ к Debian/Alpine package repositories для утилит firewall.
 
 Таблица `events` создаётся API через `CREATE TABLE IF NOT EXISTS` при запуске, в том числе в существующем томе ДЗ 2. Удалять тома для обновления не нужно. Для одной фиксированной таблицы пока обходимся без системы миграций.
 
@@ -273,9 +276,9 @@ SEPS_INTEGRATION=1 .venv/bin/python -m pytest tests/test_integration.py -v -s
 | `redis` | Через `docker compose exec` | `redis:6379` |
 | `rabbitmq` | Только management: `127.0.0.1:15672` | AMQP: `rabbitmq:5672` |
 
-Сохраняем образы PostgreSQL 17, Redis 7.4, RabbitMQ 4 management и одну сеть Compose из ДЗ 2. Python-зависимости зафиксированы в requirements. Теги образов допускают обновления исправлений; все транзитивные зависимости и digest пока не фиксируем.
+Сохраняем базовые образы PostgreSQL 17, Redis 7.4, RabbitMQ 4 management и тома ДЗ 2. Вместо общей сети используются четыре сети, описанные ниже. `docker/Infrastructure.Dockerfile` добавляет к официальным Alpine-образам только утилиты firewall и общий entrypoint; команды запуска и официальные entrypoint сохраняются. Python-зависимости зафиксированы в requirements. Теги образов допускают обновления исправлений; все транзитивные зависимости и digest пока не фиксируем.
 
-API и Worker используют один Dockerfile с разными командами запуска; это два независимых процесса в разных контейнерах. Образ работает от непривилегированного пользователя. Для понятности и небольшого учебного трафика БД и публикация открывают соединения на операцию; для высоких нагрузок потребовались бы пулы и дополнительные гарантии.
+API и Worker используют один Dockerfile с разными командами запуска; это два независимых процесса в разных контейнерах. Стартовый entrypoint выполняется с root UID для установки локальных правил; до запуска API/Worker переключается на UID 10001 и снимает все capabilities. Официальные entrypoint инфраструктуры переключают UID на postgres/redis/rabbitmq после снятия NET_ADMIN. Для понятности и небольшого учебного трафика БД и публикация открывают соединения на операцию; для высоких нагрузок потребовались бы пулы и дополнительные гарантии.
 
 Тома PostgreSQL и RabbitMQ сохраняются при пересоздании контейнеров. `hostname: rabbitmq` сохраняет имя узла брокера. У Redis отключены RDB/AOF — потерянный кэш восстанавливается из БД.
 
@@ -287,8 +290,15 @@ app/
   cache.py             # Redis, TTL и fallback
   messaging.py         # Подключение и публикация RabbitMQ (pika)
   worker.py            # Consumer, логирование и подтверждения
+  tcp_probe.py         # Одноразовая TCP-проверка, различает timeout/refused
   __init__.py
 Dockerfile
+docker/
+  Infrastructure.Dockerfile # Небольшой слой поверх Alpine-образов
+  firewall-entrypoint.sh   # Фильтрация внутри контейнера и снятие capabilities
+scripts/
+  check_networks.py        # Матрица TCP по IP, политики и DROP counters
+.gitattributes            # LF для shell-скрипта, включая checkout на Windows
 docker-compose.yml
 requirements.txt
 requirements-dev.txt
@@ -300,6 +310,134 @@ tests/
 .gitignore
 .dockerignore
 ```
+
+## Сетевая безопасность — ДЗ 4
+
+### Сети и адреса
+
+| Сеть | Участники и IPv4 по умолчанию | Свойства |
+|---|---|---|
+| `api-db` | API `172.28.10.2`, PostgreSQL `172.28.10.3` | `internal: true`, `/29` |
+| `api-cache` | API `172.28.11.2`, Redis `172.28.11.3` | `internal: true`, `/29` |
+| `api-mq` | API `172.28.12.2`, RabbitMQ `172.28.12.3` | bridge, `/29`; публикация HTTP/Management |
+| `worker-mq` | Worker `172.28.13.2`, RabbitMQ `172.28.13.3` | `internal: true`, `/29` |
+
+В каждой сети шлюз имеет адрес `.1`. Фиксированные адреса нужны для небольших понятных правил с конкретными source/destination, без разрешения всей подсети. При конфликте с LAN/VPN/другим Docker-проектом задайте свободный двухоктетный `SEPS_NETWORK_PREFIX` в `.env` (например, `172.29`), выполните `down`, затем `up`. Compose и firewall используют одно значение. Старые БД/пароли/тома при этом сохраняются. Префикс выбирает владелец стенда, это доверенная конфигурация.
+
+`api-mq` оставлена обычным bridge для предсказуемой работы опубликованных портов Docker Desktop. Наличие gateway не даёт приложению произвольный исходящий доступ: OUTPUT DROP разрешает только перечисленные ниже соединения. IPv6 не используется для межсервисного обмена и также закрыт локальными ip6tables-правилами.
+
+### Матрица новых соединений
+
+| Источник → назначение | API:8000 | PostgreSQL:5432 | Redis:6379 | RabbitMQ:5672 | RabbitMQ:15672 |
+|---|---|---|---|---|---|
+| Event API | Локально | ALLOW | ALLOW | ALLOW | DENY |
+| Event Worker | DENY | DENY | DENY | ALLOW | DENY |
+| PostgreSQL | DENY | Локально | DENY | DENY | DENY |
+| Redis | DENY | DENY | Локально | DENY | DENY |
+| RabbitMQ | DENY | DENY | DENY | Локально | Локально |
+| Хост через опубликованный порт | ALLOW, localhost | Не опубликован | Не опубликован | Не опубликован | ALLOW, localhost |
+
+У Worker нет входного сервисного порта. Остальные новые TCP/UDP-соединения запрещены по умолчанию; ответный трафик разрешён через conntrack `ESTABLISHED,RELATED`. Loopback разрешён для healthcheck, локальных CLI RabbitMQ/PostgreSQL и Docker DNS (`127.0.0.11`). Под «локально» понимается собственное сетевое пространство контейнера, не возможность подключаться к соседу.
+
+### Docker isolation и явный Firewall — разные уровни
+
+**Docker-managed isolation** разделяет bridge-сети и их DNS-области. Worker не состоит в `api-db`/`api-cache`; у PostgreSQL нет общей сети с RabbitMQ. `internal: true` дополнительно ограничивает маршрутизацию за пределы соответствующей сети. Обычные bridge-правила Docker создаёт сам при создании сетей; вручную глобальный firewall Docker-хоста не редактируем.
+
+Одной сегментации недостаточно для полной матрицы: участники общей сети по умолчанию могут обращаться друг к другу на разные порты и в обоих направлениях. Например, Worker и RabbitMQ разделяют сеть, но Worker не должен ходить на Management:15672; PostgreSQL разделяет сеть с API, но не должен сам инициировать HTTP-запросы к API.
+
+**Явный firewall** задаётся `docker/firewall-entrypoint.sh` в network namespace каждого контейнера:
+
+1. Атомарно загружается собственная filter-таблица IPv4 с `INPUT/OUTPUT/FORWARD DROP`. NAT-таблица и Docker DNS не изменяются.
+2. Разрешаются loopback, ответный трафик и четыре нужных направления с точными IP/портами. Для HTTP API и Management разрешён вход с хоста; участникам подсетей SEPS эти публичные порты закрыты. Адреса gateway доверены как граница Docker-хоста.
+3. Для IPv6 установлены DROP-политики с исключением loopback и ответов.
+4. Только после успешной установки правил запускается сервис. При ошибке применения firewall entrypoint завершается, не оставляя работающее приложение без правил.
+
+`cap_add: NET_ADMIN` требуется только стартовому скрипту в **собственном** сетевом пространстве. Перед запуском сервиса `setpriv` удаляет её из bounding set и остальных capability sets. У API/Worker UID 10001 и все capabilities сняты. У всех контейнеров отключена NET_RAW и включён `no-new-privileges`. Правила продолжают действовать в ядре без процесса firewall. Дополнительных постоянно работающих firewall-контейнеров нет.
+
+Не используются `privileged`, `network_mode: host`, Docker socket, изменение правил Windows Defender Firewall, `DOCKER-USER` или глобальных iptables/nftables Linux-хоста. Команды `iptables` в проверках ниже выполняются через `docker compose exec` внутри контейнера.
+
+### Воспроизводимая проверка всей матрицы
+
+После запуска стека из папки репозитория:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check_networks.py
+```
+
+Либо `python scripts/check_networks.py`, если Python доступен напрямую. На Linux: `.venv/bin/python scripts/check_networks.py`. Дополнительных Python-пакетов для этого скрипта не требуется.
+
+Скрипт читает реальные адреса через `docker inspect`, проверяет состав сетей и политики IPv4/IPv6, отсутствие NET_ADMIN у PID 1, четыре разрешённых TCP-направления и 16 запрещённых подключений к сервисным портам. Затем сверяет рост счётчика OUTPUT DROP у Worker. Запрещённые проверки используют **IP**, а не только отсутствие DNS. Код выхода 0 означает успех; непредвиденный результат приводит к ошибке.
+
+Разрешённые проверки и HTTP-проверка Management сначала подтверждают, что целевые порты действительно слушают. `TIMEOUT` показывает отбрасывание пакетов; `ENETUNREACH`/`EHOSTUNREACH` — отсутствие доступного маршрута. `ECONNREFUSED` означает закрытый порт и **не принимается** как доказательство firewall. Отсутствие DNS (`gaierror`) тоже не считается успехом запрета.
+
+### Четыре обязательные проверки вручную — PowerShell
+
+Получите IP односетевых контейнеров:
+
+```powershell
+$pgIp = docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' (docker compose ps -q postgres)
+$redisIp = docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' (docker compose ps -q redis)
+```
+
+Разрешены:
+
+```powershell
+docker compose exec --user 10001 event-api python -m app.tcp_probe $pgIp 5432 --expect allow
+docker compose exec --user 10001 event-worker python -m app.tcp_probe rabbitmq 5672 --expect allow
+```
+
+Ожидается `CONNECTED`, `"pass": true`. Теперь тот же **живой** PostgreSQL и Redis из Worker по IP:
+
+```powershell
+docker compose exec --user 10001 event-worker python -m app.tcp_probe $pgIp 5432 --expect deny
+docker compose exec --user 10001 event-worker python -m app.tcp_probe $redisIp 6379 --expect deny
+```
+
+Ожидается `TIMEOUT` либо ошибка маршрутизации и `"pass": true`. Это реальная попытка открыть TCP-сокет, а не DNS-проверка.
+
+### Доказательство явной фильтрации в общей сети
+
+При стандартном префиксе RabbitMQ в `worker-mq` имеет IP `172.28.13.3`. Если меняли префикс, замените его в команде. В полном скрипте выше IP вычисляется автоматически.
+
+```powershell
+docker compose exec --user 0 event-worker iptables -nvxL OUTPUT
+docker compose exec --user 10001 event-worker python -m app.tcp_probe 172.28.13.3 15672 --expect deny
+docker compose exec --user 0 event-worker iptables -nvxL OUTPUT
+```
+
+У Worker и RabbitMQ общая сеть и доступный AMQP:5672, Management работает с хоста, но TCP:15672 из Worker завершится `TIMEOUT`. Счётчик пакетов политики OUTPUT DROP увеличится. Это показывает действие **явных правил**, а не только сегментации.
+
+Просмотр всех правил и runtime capabilities:
+
+```powershell
+docker compose exec --user 0 event-worker iptables -S
+docker compose exec --user 0 event-worker ip6tables -S
+docker compose exec event-worker cat /proc/1/status
+```
+
+Для остальных сервисов замените имя контейнера. Чтение правил требует NET_ADMIN, поэтому запускается отдельным доверенным процессом `docker exec --user 0` владельца Docker. Процесс приложения PID 1 этой capability не имеет; `check_networks.py` проверяет `CapEff`, `CapPrm`, `CapBnd`. Новый процесс, запущенный администратором через Docker CLI, не является потомком приложения и может иметь capabilities из конфигурации контейнера.
+
+### Проверка сохранения ДЗ 3
+
+Повторите разделы POST, PostgreSQL, HIT/MISS и Worker выше либо запустите:
+
+```powershell
+$env:SEPS_INTEGRATION = "1"
+.\.venv\Scripts\python.exe -m pytest -q
+Remove-Item Env:SEPS_INTEGRATION
+```
+
+Интеграционный тест должен пройти с включённым firewall. `/health` продолжает проверять API, а штатные healthcheck инфраструктуры работают через loopback/локальные соединения. Проверки RabbitMQ (`rabbitmqctl`, `rabbitmq-diagnostics`) выполняйте внутри его контейнера.
+
+### Совместимость и ограничения
+
+- Решение рассчитано на Linux containers Docker Desktop под Windows 11/WSL 2. Пользователь вводит команды в PowerShell; Linux iptables выполняется в контейнерах, а не в Windows. Для shell-скрипта задан LF через `.gitattributes`.
+- Нужны поддерживаемые ядром netfilter/conntrack и NET_ADMIN при старте. Если настройки Docker запрещают capability, запуск завершится ошибкой. Автоматически переходить к `privileged` или отключать firewall не будем.
+- Фиксированные IP упрощают защиту учебного стенда, но не рассчитаны на масштабирование реплик. При смене подсетей пересоздавайте контейнеры. Docker Desktop с включённой Enhanced Container Isolation требует отдельной проверки разрешений.
+- Docker/Windows-администратор — доверенная сторона: он может выполнить `docker exec` с root, изменить capability или подключить новый контейнер к сети. Эта защита ограничивает процессы сервисов, но не владельца Docker daemon.
+- Хостовые gateway и loopback/Docker DNS — необходимые исключения. Это не L7 firewall и не фильтрация DNS-запросов. HTTP-аутентификацию, TLS, защиту от DoS и sandbox от уязвимостей ядра эта работа не добавляет.
+- TCP-тесты покрывают заданные слушающие порты и обе стороны важных связей; они не сканируют все 65535 портов. Закрытие прочих новых соединений следует из DROP-политик, состав которых проверяется отдельно.
+- Сначала выполните локальные проверки на своей версии Docker Desktop: облачная Linux-проверка не заменяет проверку конкретной Windows-машины.
 
 ## Остановка и диагностика
 

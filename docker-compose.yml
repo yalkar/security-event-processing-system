@@ -1,13 +1,28 @@
+x-firewall: &firewall
+  cap_add: [NET_ADMIN]
+  cap_drop: [NET_RAW]
+  security_opt: ["no-new-privileges:true"]
+
 services:
   event-api:
+    <<: *firewall
     build: .
     environment:
+      SEPS_ROLE: event-api
+      SEPS_NETWORK_PREFIX: ${SEPS_NETWORK_PREFIX:-172.28}
       POSTGRES_DB: ${POSTGRES_DB:?Copy .env.example to .env}
       POSTGRES_USER: ${POSTGRES_USER:?Copy .env.example to .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       RABBITMQ_USER: ${RABBITMQ_DEFAULT_USER:?Copy .env.example to .env}
       RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS in .env}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+    networks:
+      api-db:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.10.2
+      api-cache:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.11.2
+      api-mq:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.12.2
     depends_on:
       postgres:
         condition: service_healthy
@@ -26,22 +41,39 @@ services:
       start_period: 10s
 
   event-worker:
+    <<: *firewall
     build: .
     command: ["python", "-m", "app.worker"]
     environment:
+      SEPS_ROLE: event-worker
+      SEPS_NETWORK_PREFIX: ${SEPS_NETWORK_PREFIX:-172.28}
       RABBITMQ_USER: ${RABBITMQ_DEFAULT_USER:?Copy .env.example to .env}
       RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS in .env}
+    networks:
+      worker-mq:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.13.2
     depends_on:
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped
 
   postgres:
-    image: postgres:17-alpine
+    <<: *firewall
+    build:
+      context: .
+      dockerfile: docker/Infrastructure.Dockerfile
+      args:
+        BASE_IMAGE: postgres:17-alpine
+    command: ["postgres"]
     environment:
+      SEPS_ROLE: postgres
+      SEPS_NETWORK_PREFIX: ${SEPS_NETWORK_PREFIX:-172.28}
       POSTGRES_DB: ${POSTGRES_DB:?Copy .env.example to .env}
       POSTGRES_USER: ${POSTGRES_USER:?Copy .env.example to .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    networks:
+      api-db:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.10.3
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -52,7 +84,18 @@ services:
       start_period: 10s
 
   redis:
-    image: redis:7.4-alpine
+    <<: *firewall
+    build:
+      context: .
+      dockerfile: docker/Infrastructure.Dockerfile
+      args:
+        BASE_IMAGE: redis:7.4-alpine
+    environment:
+      SEPS_ROLE: redis
+      SEPS_NETWORK_PREFIX: ${SEPS_NETWORK_PREFIX:-172.28}
+    networks:
+      api-cache:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.11.3
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -62,11 +105,24 @@ services:
       start_period: 5s
 
   rabbitmq:
-    image: rabbitmq:4-management-alpine
+    <<: *firewall
+    build:
+      context: .
+      dockerfile: docker/Infrastructure.Dockerfile
+      args:
+        BASE_IMAGE: rabbitmq:4-management-alpine
+    command: ["rabbitmq-server"]
     hostname: rabbitmq
     environment:
+      SEPS_ROLE: rabbitmq
+      SEPS_NETWORK_PREFIX: ${SEPS_NETWORK_PREFIX:-172.28}
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?Copy .env.example to .env}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS in .env}
+    networks:
+      api-mq:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.12.3
+      worker-mq:
+        ipv4_address: ${SEPS_NETWORK_PREFIX:-172.28}.13.3
     ports:
       - "127.0.0.1:15672:15672"
     volumes:
@@ -81,3 +137,26 @@ services:
 volumes:
   postgres_data:
   rabbitmq_data:
+
+networks:
+  api-db:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SEPS_NETWORK_PREFIX:-172.28}.10.0/29
+  api-cache:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SEPS_NETWORK_PREFIX:-172.28}.11.0/29
+  api-mq:
+    # Обычный bridge сохраняет предсказуемую публикацию localhost-портов.
+    # Исходящие соединения дополнительно ограничены локальным firewall.
+    ipam:
+      config:
+        - subnet: ${SEPS_NETWORK_PREFIX:-172.28}.12.0/29
+  worker-mq:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SEPS_NETWORK_PREFIX:-172.28}.13.0/29
