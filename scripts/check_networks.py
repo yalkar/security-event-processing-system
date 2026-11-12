@@ -7,10 +7,11 @@ import re
 import subprocess
 import urllib.request
 
-SERVICES = ("event-api", "event-worker", "postgres", "redis", "rabbitmq")
+SERVICES = ("event-api", "event-worker", "event-worker-standby", "postgres", "redis", "rabbitmq")
 NETWORKS = {
     "event-api": {"api-db", "api-cache", "api-mq"},
     "event-worker": {"worker-mq"},
+    "event-worker-standby": {"worker-mq"},
     "postgres": {"api-db"},
     "redis": {"api-cache"},
     "rabbitmq": {"api-mq", "worker-mq"},
@@ -18,7 +19,8 @@ NETWORKS = {
 TARGETS = (("event-api", 8000), ("postgres", 5432), ("redis", 6379),
            ("rabbitmq", 5672), ("rabbitmq", 15672))
 ALLOWED = {("event-api", "postgres", 5432), ("event-api", "redis", 6379),
-           ("event-api", "rabbitmq", 5672), ("event-worker", "rabbitmq", 5672)}
+           ("event-api", "rabbitmq", 5672), ("event-worker", "rabbitmq", 5672),
+           ("event-worker-standby", "rabbitmq", 5672)}
 
 
 def run(*args, check=True):
@@ -65,7 +67,7 @@ def main():
         fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
         for field in ("CapEff", "CapPrm", "CapBnd"):
             assert not int(fields[field].strip(), 16) & (1 << 12), (service, field)
-        if service in ("event-api", "event-worker"):
+        if service in ("event-api", "event-worker", "event-worker-standby"):
             assert set(fields["Uid"].split()) == {"10001"}, service
         print(f"PASS policy/capabilities/networks: {service}", flush=True)
 
@@ -85,7 +87,7 @@ def main():
             if source == target or (source, target, port) in ALLOWED:
                 continue
             ip = ip_for(addresses[source], addresses[target])
-            if source in ("event-api", "event-worker"):
+            if source in ("event-api", "event-worker", "event-worker-standby"):
                 result = compose("exec", "-T", "--user", "10001", source,
                                  "python", "-m", "app.tcp_probe", ip, str(port),
                                  "--expect", "deny", check=False)
@@ -104,7 +106,7 @@ def main():
     after = output_drops("event-worker")
     assert after > before, "No OUTPUT DROP counter increase on Worker"
     print(f"PASS explicit firewall: Worker OUTPUT DROP packets {before} -> {after}")
-    print("PASS: 4 allowed directions and all other cross-service targets checked by IP")
+    print(f"PASS: {len(ALLOWED)} allowed directions and all other cross-service targets checked by IP")
 
 
 if __name__ == "__main__":

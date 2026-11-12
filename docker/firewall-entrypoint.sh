@@ -47,11 +47,15 @@ case "$role" in
     event-worker)
         allow_out 13.2 13.3 5672
         ;;
+    event-worker-standby)
+        allow_out 13.4 13.3 5672
+        ;;
     postgres) allow_in 10.2 10.3 5432 ;;
     redis) allow_in 11.2 11.3 6379 ;;
     rabbitmq)
         allow_in 12.2 12.3 5672
         allow_in 13.2 13.3 5672
+        allow_in 13.4 13.3 5672
         public_port 15672
         ;;
     *) echo "Unknown SEPS_ROLE" >&2; exit 1 ;;
@@ -73,7 +77,7 @@ RULES
 echo "firewall_applied role=$role policies=DROP namespace=container"
 
 case "$role" in
-    event-api|event-worker)
+    event-api|event-worker|event-worker-standby)
         # У процесса приложения не останется capabilities или root UID.
         exec setpriv --reuid=10001 --regid=10001 --init-groups \
             --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
