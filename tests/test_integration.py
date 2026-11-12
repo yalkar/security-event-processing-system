@@ -47,7 +47,7 @@ def test_postgres_cache_and_consumer():
         assert client.get(f"/events/{event_id}").headers["x-cache"] == "HIT"
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            logs = compose("logs", "--since=2m", "event-worker")
+            logs = compose("logs", "--since=2m", "event-worker", "event-worker-standby")
             if any("received_event" in line and event_id in line for line in logs.splitlines()):
                 break
             time.sleep(0.5)

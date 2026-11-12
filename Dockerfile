@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends iptables util-linux \
+    && apt-get install -y --no-install-recommends iptables util-linux tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -23,4 +23,4 @@ COPY --chmod=755 docker/firewall-entrypoint.sh /usr/local/bin/seps-entrypoint
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/seps-entrypoint"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["tini", "-g", "--", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
